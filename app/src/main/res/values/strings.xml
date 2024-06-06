@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Client</string>
+    <string name="app_text">Приложение для подсчета используемых слов. Узнайте, сколько раз вы использовали то или  иное слово</string>
+</resources>
