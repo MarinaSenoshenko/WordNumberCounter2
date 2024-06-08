@@ -10,45 +10,31 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.*
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.example.client.ui.theme.ClientTheme
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
-import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
-import retrofit2.Call
-import retrofit2.Callback
-import retrofit2.Response
-import retrofit2.Retrofit
+import retrofit2.*
 import retrofit2.converter.gson.GsonConverterFactory
-import retrofit2.http.Multipart
-import retrofit2.http.POST
-import retrofit2.http.Part
-import java.io.File
-import java.io.IOException
+import retrofit2.http.*
+import java.io.*
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -70,8 +56,8 @@ class MainActivity : ComponentActivity() {
 fun MainContent() {
     val appText = stringResource(id = R.string.app_text)
     var selectedFileUri by remember { mutableStateOf<Uri?>(null) }
+    val wordCounts by remember { mutableStateOf(mutableStateListOf<Pair<String, Int>>()) }
     val context = LocalContext.current
-
     val launcher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result: ActivityResult ->
@@ -85,12 +71,10 @@ fun MainContent() {
             .fillMaxSize()
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.Top
     ) {
-        Text(text = appText)
-
+        Text(text = appText, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(16.dp))
-
         Button(
             onClick = {
                 val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
@@ -100,12 +84,11 @@ fun MainContent() {
             },
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(text = "Attach .txt file")
+            Text(text = "Прикрепить .txt file")
         }
         Spacer(modifier = Modifier.height(8.dp))
         if (selectedFileUri != null) {
-            Text(text = "Selected file: ${selectedFileUri.toString()}")
-
+            Text(text = "Ссылка на выбранный файл: ${selectedFileUri.toString()}")
             Button(
                 onClick = {
                     val file = File(context.filesDir, "temp.txt")
@@ -115,14 +98,46 @@ fun MainContent() {
                                 inputStream.copyTo(outputStream)
                             }
                         }
-                        uploadFile(file)
+                        uploadFile(file) { response ->
+                            wordCounts.clear()
+                            wordCounts.addAll(response.map { it.key to it.value })
+                        }
                     } catch (e: IOException) {
-                        // Обработайте ошибку
+                        Log.e("FormFileError", "Ошибка создания файла: ${e.stackTrace}")
                     }
                 },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text(text = "Upload File")
+                Text(text = "Узнать")
+            }
+            if (wordCounts.isNotEmpty()) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Row(modifier = Modifier.fillMaxWidth().padding(8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {Text(text = "Слово", style = MaterialTheme.typography.bodyLarge)
+                        Text(text = "Количество", style = MaterialTheme.typography.bodyLarge)
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(0.dp)
+                    ) {
+                        items(wordCounts) { (word, count) ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(0.dp)
+                                    .border(1.dp, Color.LightGray),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(text = word)
+                                Text(text = count.toString())
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -131,10 +146,10 @@ fun MainContent() {
 interface UploadService {
     @Multipart
     @POST("http://10.0.2.2:8080")
-    fun uploadFile(@Part("file") file: RequestBody): Call<Any>
+    fun uploadFile(@Part file: MultipartBody.Part): Call<Map<String, Int>> // Возвращаем Map<String, Int>
 }
 
-fun uploadFile(file: File) {
+fun uploadFile(file: File, onSuccess: (Map<String, Int>) -> Unit) {
     val gson: Gson = GsonBuilder().create()
     val client = OkHttpClient()
     val retrofit = Retrofit.Builder()
@@ -145,17 +160,30 @@ fun uploadFile(file: File) {
 
     val service = retrofit.create(UploadService::class.java)
 
-    val MEDIA_TYPE_TEXT = "text/plain".toMediaType()
-    val requestBody = file.asRequestBody(MEDIA_TYPE_TEXT)
+    val requestBody = file.asRequestBody("multipart/form-data".toMediaTypeOrNull())
+    val bodyPart = MultipartBody.Part.createFormData("file", file.name, requestBody)
 
-    service.uploadFile(requestBody).enqueue(object : Callback<Any> {
-        override fun onFailure(call: Call<Any>, t: Throwable) {
+    service.uploadFile(bodyPart).enqueue(object : Callback<Map<String, Int>> {
+        override fun onFailure(call: Call<Map<String, Int>>, t: Throwable) {
             Log.e("UploadFileError", "Ошибка загрузки файла: ${t.message}")
         }
 
-        override fun onResponse(call: Call<Any>, response: Response<Any>) {
-            Log.i("UploadFileCorrectly", "Корректная загрузка файла: ${response.message()}")
-            // TODO обработать вывод от сервера
+        override fun onResponse(
+            call: Call<Map<String, Int>>,
+            response: Response<Map<String, Int>>
+        ) {
+            if (response.isSuccessful) {
+                val responseBody = response.body()!!
+                Log.i("UploadFileCorrectly", "Ответ от сервера: $responseBody")
+
+                println("Слово | Количество")
+                responseBody.forEach { (word, count) ->
+                    println("$word | $count")
+                }
+                onSuccess(responseBody)
+            } else {
+                Log.e("UploadFileError", "Ошибка загрузки файла: ${response.errorBody()?.string()}")
+            }
         }
     })
 }
